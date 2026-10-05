@@ -29,47 +29,62 @@ HOMEWORK_VERDICTS = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
+TOKEN_NAMES = ('PRACTICUM_TOKEN', 'VK_TOKEN', 'VK_USER_ID')
+
+logger = logging.getLogger(__name__)
 
 
 def check_tokens():
-    """Проверить наличие всех обязательных переменных окружения."""
-    return all((PRACTICUM_TOKEN, VK_TOKEN, VK_USER_ID))
+    """Проверить переменные окружения и остановить бота, если их нет."""
+    missing_tokens = [name for name in TOKEN_NAMES if not globals()[name]]
+    if missing_tokens:
+        message = (
+            'Отсутствуют обязательные переменные окружения: '
+            f'{", ".join(missing_tokens)}. '
+            'Программа принудительно остановлена.'
+        )
+        logger.critical(message)
+        sys.exit(message)
 
 
 def send_message(vk, message):
-    """Отправить сообщение в VK-чат пользователю VK_USER_ID."""
-    vk.messages.send(
-        user_id=VK_USER_ID,
-        message=message,
-        random_id=random.randint(1, 2 ** 31),
-    )
-    logging.debug(f'Бот отправил сообщение: "{message}"')
+    """Отправить сообщение в VK и вернуть True при успешной отправке."""
+    try:
+        vk.messages.send(
+            user_id=VK_USER_ID,
+            message=message,
+            random_id=random.randint(1, 2 ** 31),
+        )
+    except Exception as error:
+        logger.error(f'Сбой при отправке сообщения в VK: {error}')
+        return False
+    logger.debug(f'Бот отправил сообщение: "{message}"')
+    return True
 
 
 def get_api_answer(timestamp):
     """Сделать запрос к API и вернуть ответ, приведённый к типам Python."""
     params = {'from_date': timestamp}
+    logger.debug(f'Отправляем запрос к {ENDPOINT} с параметрами {params}.')
     try:
         response = requests.get(ENDPOINT, headers=HEADERS, params=params)
     except requests.RequestException as error:
         raise ApiRequestError(
-            f'Сбой при запросе к эндпоинту {ENDPOINT}: {error}'
+            f'Сбой при запросе к эндпоинту {ENDPOINT} '
+            f'с параметрами {params}: {error}'
         )
     if response.status_code != HTTPStatus.OK:
         raise WrongResponseCodeError(
             f'Эндпоинт {ENDPOINT} недоступен. '
             f'Код ответа API: {response.status_code}'
         )
+    logger.debug('Ответ от API успешно получен.')
     return response.json()
 
 
 def check_response(response):
     """Проверить ответ API на соответствие ожидаемой структуре."""
+    logger.debug('Начинаем проверку ответа API.')
     if not isinstance(response, dict):
         raise TypeError(
             'Ответ API должен быть словарём, получен '
@@ -77,37 +92,37 @@ def check_response(response):
         )
     if 'homeworks' not in response:
         raise KeyError('В ответе API отсутствует ключ "homeworks".')
-    if 'current_date' not in response:
-        raise KeyError('В ответе API отсутствует ключ "current_date".')
     homeworks = response['homeworks']
     if not isinstance(homeworks, list):
         raise TypeError(
             'Данные под ключом "homeworks" должны быть списком, получен '
             f'{type(homeworks).__name__}.'
         )
+    logger.debug('Ответ API прошёл проверку.')
     return homeworks
 
 
 def parse_status(homework):
     """Извлечь статус домашней работы и подготовить сообщение для VK."""
+    logger.debug('Начинаем проверку статуса домашней работы.')
     if 'homework_name' not in homework:
         raise KeyError('В ответе API отсутствует ключ "homework_name".')
+    if 'status' not in homework:
+        raise KeyError('В ответе API отсутствует ключ "status".')
     homework_name = homework['homework_name']
-    status = homework.get('status')
+    status = homework['status']
     if status not in HOMEWORK_VERDICTS:
         raise ValueError(f'Неизвестный статус домашней работы: "{status}".')
-    verdict = HOMEWORK_VERDICTS[status]
-    return f'Изменился статус проверки работы "{homework_name}". {verdict}'
+    logger.debug(f'Получен статус работы "{homework_name}": {status}.')
+    return (
+        f'Изменился статус проверки работы "{homework_name}". '
+        f'{HOMEWORK_VERDICTS[status]}'
+    )
 
 
 def main():
     """Основная логика работы бота."""
-    if not check_tokens():
-        logging.critical(
-            'Отсутствует обязательная переменная окружения. '
-            'Программа принудительно остановлена.'
-        )
-        sys.exit('Отсутствует обязательная переменная окружения.')
+    check_tokens()
 
     vk_session = vk_api.VkApi(token=VK_TOKEN)
     vk = vk_session.get_api()
@@ -120,27 +135,28 @@ def main():
             homeworks = check_response(response)
             if homeworks:
                 message = parse_status(homeworks[0])
-                if message != last_message:
-                    send_message(vk, message)
+                if message != last_message and send_message(vk, message):
                     last_message = message
             else:
-                logging.debug('В ответе нет новых статусов домашних работ.')
-            timestamp = response.get('current_date', timestamp)
+                logger.debug('В ответе нет новых статусов домашних работ.')
+            timestamp = response.get('current_date', int(time.time()))
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
-            logging.error(message, exc_info=True)
-            if message != last_message:
-                try:
-                    send_message(vk, message)
-                    last_message = message
-                except Exception as send_error:
-                    logging.error(
-                        'Не удалось отправить сообщение об ошибке в VK: '
-                        f'{send_error}'
-                    )
+            logger.exception(message)
+            if message != last_message and send_message(vk, message):
+                last_message = message
         finally:
             time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format=(
+            '%(asctime)s [%(levelname)s] '
+            '%(funcName)s:%(lineno)d - %(message)s'
+        ),
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
     main()
