@@ -31,20 +31,16 @@ HOMEWORK_VERDICTS = {
 
 TOKEN_NAMES = ('PRACTICUM_TOKEN', 'VK_TOKEN', 'VK_USER_ID')
 
-logger = logging.getLogger(__name__)
-
 
 def check_tokens():
-    """Проверить переменные окружения и остановить бота, если их нет."""
+    """Проверить наличие всех обязательных переменных окружения."""
     missing_tokens = [name for name in TOKEN_NAMES if not globals()[name]]
     if missing_tokens:
-        message = (
+        logging.critical(
             'Отсутствуют обязательные переменные окружения: '
-            f'{", ".join(missing_tokens)}. '
-            'Программа принудительно остановлена.'
+            f'{", ".join(missing_tokens)}.'
         )
-        logger.critical(message)
-        sys.exit(message)
+    return not missing_tokens
 
 
 def send_message(vk, message):
@@ -56,16 +52,16 @@ def send_message(vk, message):
             random_id=random.randint(1, 2 ** 31),
         )
     except Exception as error:
-        logger.error(f'Сбой при отправке сообщения в VK: {error}')
+        logging.error(f'Сбой при отправке сообщения в VK: {error}')
         return False
-    logger.debug(f'Бот отправил сообщение: "{message}"')
+    logging.debug(f'Бот отправил сообщение: "{message}"')
     return True
 
 
 def get_api_answer(timestamp):
     """Сделать запрос к API и вернуть ответ, приведённый к типам Python."""
     params = {'from_date': timestamp}
-    logger.debug(f'Отправляем запрос к {ENDPOINT} с параметрами {params}.')
+    logging.debug(f'Отправляем запрос к {ENDPOINT} с параметрами {params}.')
     try:
         response = requests.get(ENDPOINT, headers=HEADERS, params=params)
     except requests.RequestException as error:
@@ -78,13 +74,13 @@ def get_api_answer(timestamp):
             f'Эндпоинт {ENDPOINT} недоступен. '
             f'Код ответа API: {response.status_code}'
         )
-    logger.debug('Ответ от API успешно получен.')
+    logging.debug('Ответ от API успешно получен.')
     return response.json()
 
 
 def check_response(response):
     """Проверить ответ API на соответствие ожидаемой структуре."""
-    logger.debug('Начинаем проверку ответа API.')
+    logging.debug('Начинаем проверку ответа API.')
     if not isinstance(response, dict):
         raise TypeError(
             'Ответ API должен быть словарём, получен '
@@ -98,13 +94,13 @@ def check_response(response):
             'Данные под ключом "homeworks" должны быть списком, получен '
             f'{type(homeworks).__name__}.'
         )
-    logger.debug('Ответ API прошёл проверку.')
+    logging.debug('Ответ API прошёл проверку.')
     return homeworks
 
 
 def parse_status(homework):
     """Извлечь статус домашней работы и подготовить сообщение для VK."""
-    logger.debug('Начинаем проверку статуса домашней работы.')
+    logging.debug('Начинаем проверку статуса домашней работы.')
     if 'homework_name' not in homework:
         raise KeyError('В ответе API отсутствует ключ "homework_name".')
     if 'status' not in homework:
@@ -113,7 +109,7 @@ def parse_status(homework):
     status = homework['status']
     if status not in HOMEWORK_VERDICTS:
         raise ValueError(f'Неизвестный статус домашней работы: "{status}".')
-    logger.debug(f'Получен статус работы "{homework_name}": {status}.')
+    logging.debug(f'Получен статус работы "{homework_name}": {status}.')
     return (
         f'Изменился статус проверки работы "{homework_name}". '
         f'{HOMEWORK_VERDICTS[status]}'
@@ -122,7 +118,8 @@ def parse_status(homework):
 
 def main():
     """Основная логика работы бота."""
-    check_tokens()
+    if not check_tokens():
+        sys.exit('Программа принудительно остановлена.')
 
     vk_session = vk_api.VkApi(token=VK_TOKEN)
     vk = vk_session.get_api()
@@ -138,11 +135,11 @@ def main():
                 if message != last_message and send_message(vk, message):
                     last_message = message
             else:
-                logger.debug('В ответе нет новых статусов домашних работ.')
+                logging.debug('В ответе нет новых статусов домашних работ.')
             timestamp = response.get('current_date', int(time.time()))
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
-            logger.exception(message)
+            logging.exception(message)
             if message != last_message and send_message(vk, message):
                 last_message = message
         finally:
